@@ -52,3 +52,50 @@ func ParseCallBackAppearType(name string) (CallBackAppearType, error) {
 	}
 	return CallBackAppearType(""), fmt.Errorf("%s is %w", name, ErrInvalidCallBackAppearType)
 }
+
+const (
+	// CallbackProcessorTypeProcess is a CallbackProcessorType of type process.
+	CallbackProcessorTypeProcess CallbackProcessorType = "process"
+	// CallbackProcessorTypeBack is a CallbackProcessorType of type back.
+	CallbackProcessorTypeBack CallbackProcessorType = "back"
+	// CallbackProcessorTypeClose is a CallbackProcessorType of type close.
+	CallbackProcessorTypeClose CallbackProcessorType = "close"
+	// CallbackProcessorTypeSkip is a CallbackProcessorType of type skip.
+	CallbackProcessorTypeSkip CallbackProcessorType = "skip"
+	// CallbackProcessorTypeIgnore is a CallbackProcessorType of type ignore.
+	CallbackProcessorTypeIgnore CallbackProcessorType = "ignore"
+)
+
+var ErrInvalidCallbackProcessorType = errors.New("not a valid CallbackProcessorType")
+
+// String implements the Stringer interface.
+func (x CallbackProcessorType) String() string {
+	return string(x)
+}
+
+// IsValid provides a quick way to determine if the typed value is
+// part of the allowed enumerated values
+func (x CallbackProcessorType) IsValid() bool {
+	_, err := ParseCallbackProcessorType(string(x))
+	return err == nil
+}
+
+var _CallbackProcessorTypeValue = map[string]CallbackProcessorType{
+	"process": CallbackProcessorTypeProcess,
+	"back":    CallbackProcessorTypeBack,
+	"close":   CallbackProcessorTypeClose,
+	"skip":    CallbackProcessorTypeSkip,
+	"ignore":  CallbackProcessorTypeIgnore,
+}
+
+// ParseCallbackProcessorType attempts to convert a string to a CallbackProcessorType.
+func ParseCallbackProcessorType(name string) (CallbackProcessorType, error) {
+	if x, ok := _CallbackProcessorTypeValue[name]; ok {
+		return x, nil
+	}
+	// Case insensitive parse, do a separate lookup to prevent unnecessary cost of lowercasing a string if we don't need to.
+	if x, ok := _CallbackProcessorTypeValue[strings.ToLower(name)]; ok {
+		return x, nil
+	}
+	return CallbackProcessorType(""), fmt.Errorf("%s is %w", name, ErrInvalidCallbackProcessorType)
+}

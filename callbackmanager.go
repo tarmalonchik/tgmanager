@@ -2,131 +2,166 @@ package tgmanager
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/looplab/fsm"
 )
 
-const (
-	transitionOpen              = "open"
-	transitionProcess           = "process"
-	transitionBack              = "back"
-	transitionClose             = "close"
-	transitionSkip              = "skip"
-	stateEnd                    = "%s: END"
-	stateClose                  = "%s: CLOSE"
-	stateSkip                   = "%s: SKIP"
-	stateBack                   = "%s: BACK"
-	callbackProcessorStorageKey = "callback-processor-msg-id: %d"
+const callbackProcessorStorageKey = "callback-processor-msg-id: %d"
 
-	callbackCommandProcess = "process"
-	callbackCommandSkip    = "skip"
-	callbackCommandBack    = "back"
-	callbackCommandClose   = "close"
-)
+type CallbackNodeProcessorFunc func(ctx context.Context, data DefaultDataType) ([]CallbackNode, []byte, error)
+type CallbackNotFoundDataProcessorFunc func(ctx context.Context, msgID int64, chatID int64, callback string) error
+type MessageNotFoundProcessorFunc func(ctx context.Context, msgID int64, chatID int64, message string) error
 
-type CallbackNodeProcessorFunc func(ctx context.Context, payload []byte) ([]CallbackNode, []byte, error)
-type CallbackNodeActionsProcessorFunc func(ctx context.Context) (CallbackNode, error)
+type storage interface {
+	SaveState(ctx context.Context, key string, data []byte) (err error)
+	GetState(ctx context.Context, key string) (data []byte, err error)
+	DeleteState(ctx context.Context, key string) (err error)
+}
+
+type telegramSender interface {
+	SendMsg(ctx context.Context, container TelegramContainer) (msgID int64, err error)
+	DeleteMessage(messageID int64, chatID int64)
+	GetBotName() (string, error)
+}
 
 type CallbackManager interface {
 	AddRootCallbackNode(ctx context.Context, opts CallbackOpts) error
 	Visualize() string
 	NewCallbackNode(opts CallbackOpts) (CallbackNode, error)
+	SendNode(ctx context.Context, oldData DefaultDataType) error
+	ProcessCallback(ctx context.Context, msgID, chatID int64, callback string) error
+	ProcessMsg(ctx context.Context, msgID, chatID int64, callback string) error
 }
-
-type storage interface {
-	SaveState(key string, data []byte) (err error)
-	GetState(key string) (data []byte, err error)
-}
-
-type telegramSender interface {
-	SendMsg(ctx context.Context, container TelegramContainer, msgToUpdate int64) (msgID int64, err error)
-	DeleteMsg(msgID int64) (err error)
-}
-
-type storageData struct {
-	NodeName string
-	Payload  []byte
-}
-
 type callbackManager struct {
-	defaultMsg            string
-	defaultAppearType     CallBackAppearType
-	defaultCloseProcessor CallbackNodeActionsProcessorFunc
-	defaultBackProcessor  CallbackNodeActionsProcessorFunc
-	defaultSkipProcessor  CallbackNodeActionsProcessorFunc
-	defaultProcessor      CallbackNodeProcessorFunc
-	rootCallbackNodes     []*callbackNode
-	transitionArr         []transition
-	tempTransitionsArr    []transition
-	callbackNodesMap      map[string]*callbackNode
-	storage               storage
-	sender                telegramSender
+	defaultMsg                    string
+	defaultAppearType             CallBackAppearType
+	defaultCloseProcessor         CallbackNodeProcessorFunc
+	defaultBackProcessor          CallbackNodeProcessorFunc
+	defaultSkipProcessor          CallbackNodeProcessorFunc
+	defaultProcessor              CallbackNodeProcessorFunc
+	storage                       storage
+	sender                        telegramSender
+	callbackDataNotFoundProcessor CallbackNotFoundDataProcessorFunc
+	messageNotFoundProcessor      MessageNotFoundProcessorFunc
+	rootCallbackNodes             []*callbackNode
+	transitionsMap                map[transitionMapItem]interface{}
+	callbackNodesMap              map[callbackNodeKey]*callbackNode
+	inlineMessagesProcessorsMap   map[string]SwitchInlineProcessorFunc
+	botName                       string
 }
 
-type CallbackManagerSettings struct {
-	DefaultMsg            string
-	DefaultAppearType     CallBackAppearType
-	DefaultCloseProcessor CallbackNodeActionsProcessorFunc
-	DefaultBackProcessor  CallbackNodeActionsProcessorFunc
-	DefaultSkipProcessor  CallbackNodeActionsProcessorFunc
-	DefaultProcessor      CallbackNodeProcessorFunc
-	storage               storage
+type transitionMapItem struct {
+	src        string
+	transition CallbackProcessorType
+	dest       string
 }
 
-type TelegramContainer struct {
+func (c *callbackManager) findAnyNodeByName(name string) *callbackNode {
+	arr := []CallbackProcessorType{CallbackProcessorTypeProcess, CallbackProcessorTypeClose,
+		CallbackProcessorTypeBack, CallbackProcessorTypeSkip, CallbackProcessorTypeIgnore}
+	for i := range arr {
+		val, ok := c.callbackNodesMap[callbackNodeKey{
+			name:          name,
+			processorType: arr[i],
+		}]
+		if ok {
+			return val
+		}
+	}
+	return nil
 }
 
-func NewCallbackManager(opts CallbackManagerSettings) (CallbackManager, error) {
-	if opts.DefaultMsg == "" {
+type callbackNodeKey struct {
+	name          string
+	processorType CallbackProcessorType
+}
+
+func NewCallbackManager(
+	defaultMsg string,
+	defaultAppearType CallBackAppearType,
+	defaultProcessor CallbackNodeProcessorFunc,
+	storage storage,
+	sender telegramSender,
+	messageNotFoundProcessor MessageNotFoundProcessorFunc,
+	callbackDataNotFoundProcessor CallbackNotFoundDataProcessorFunc,
+) (CallbackManager, error) {
+	if defaultMsg == "" {
 		return nil, errors.New("default msg is required field")
 	}
+
+	if storage == nil || sender == nil {
+		return nil, errors.New("storage and telegramSender are required")
+	}
+
+	botName, err := sender.GetBotName()
+	if err != nil {
+		return nil, errors.New("getting bot name")
+	}
+
 	return &callbackManager{
-		defaultMsg:            opts.DefaultMsg,
-		defaultAppearType:     opts.DefaultAppearType,
-		defaultCloseProcessor: opts.DefaultCloseProcessor,
-		defaultBackProcessor:  opts.DefaultBackProcessor,
-		defaultSkipProcessor:  opts.DefaultSkipProcessor,
-		defaultProcessor:      opts.DefaultProcessor,
-		storage:               opts.storage,
+		defaultMsg:                    defaultMsg,
+		defaultAppearType:             defaultAppearType,
+		defaultProcessor:              defaultProcessor,
+		storage:                       storage,
+		sender:                        sender,
+		callbackNodesMap:              make(map[callbackNodeKey]*callbackNode),
+		transitionsMap:                make(map[transitionMapItem]interface{}),
+		messageNotFoundProcessor:      messageNotFoundProcessor,
+		callbackDataNotFoundProcessor: callbackDataNotFoundProcessor,
+		inlineMessagesProcessorsMap:   make(map[string]SwitchInlineProcessorFunc),
+		botName:                       botName,
 	}, nil
 }
 
-type transition struct {
-	fromNode       string
-	transitionName string
-	toNode         string
+func (c *callbackManager) SetDefaultProcessor(defaultProcessor CallbackNodeProcessorFunc) {
+	c.defaultProcessor = defaultProcessor
+}
+
+func (c *callbackManager) SetMessageNotFoundProcessor(messageNotFoundProcessor MessageNotFoundProcessorFunc) {
+	c.messageNotFoundProcessor = messageNotFoundProcessor
+}
+
+func (c *callbackManager) SetCallbackDataNotFoundProcessor(callbackDataNotFoundProcessor CallbackNotFoundDataProcessorFunc) {
+	c.callbackDataNotFoundProcessor = callbackDataNotFoundProcessor
 }
 
 func (c *callbackManager) Visualize() string {
-	var events = make([]fsm.EventDesc, 0, len(c.transitionArr))
+	var events = make([]fsm.EventDesc, 0, len(c.callbackNodesMap))
 
-	for i := range c.transitionArr {
+	transCount := 0
+
+	for key, _ := range c.transitionsMap {
+		trans := key.transition.String()
+		if trans == CallbackProcessorTypeProcess.String() {
+			trans = fmt.Sprintf("%s:%d", trans, transCount)
+			transCount++
+		}
 		events = append(events, fsm.EventDesc{
-			Name: c.transitionArr[i].transitionName,
-			Src:  []string{c.transitionArr[i].fromNode},
-			Dst:  c.transitionArr[i].toNode,
+			Name: trans,
+			Src:  []string{key.src},
+			Dst:  key.dest,
 		})
 	}
-
 	machine := fsm.NewFSM("root", events, nil)
 	return fsm.Visualize(machine)
 }
 
 func (c *callbackManager) AddRootCallbackNode(ctx context.Context, opts CallbackOpts) error {
+	if !opts.ProcessorType.IsValid() {
+		opts.ProcessorType = CallbackProcessorTypeProcess
+	}
+
 	node, err := c.newCallbackNode(opts)
 	if err != nil {
 		return err
 	}
 	c.rootCallbackNodes = append(c.rootCallbackNodes, node)
 
-	defer func() {
-		c.transitionArr = append(c.transitionArr, c.tempTransitionsArr...)
-		c.tempTransitionsArr = nil
-	}()
-
-	if err = c.processCallbackNode(ctx, "root", transitionOpen, c.rootCallbackNodes[len(c.rootCallbackNodes)-1]); err != nil {
+	if err = c.processCallbackNode(ctx, "root", CallbackProcessorTypeIgnore, c.rootCallbackNodes[len(c.rootCallbackNodes)-1]); err != nil {
 		c.rootCallbackNodes = c.rootCallbackNodes[:len(c.rootCallbackNodes)-1]
 		return err
 	}
@@ -134,76 +169,119 @@ func (c *callbackManager) AddRootCallbackNode(ctx context.Context, opts Callback
 }
 
 func (c *callbackManager) NewCallbackNode(opts CallbackOpts) (CallbackNode, error) {
-	node, err := c.newCallbackNode(opts)
-	return node, err
+	return c.newCallbackNode(opts)
 }
 
-func (c *callbackManager) SendNode(ctx context.Context, name string, oldPayload []byte) error {
-	node, ok := c.callbackNodesMap[name]
-	if !ok {
-		return errors.New("node with this name not found")
-	}
+func (c *callbackManager) SendNode(ctx context.Context, oldData DefaultDataType) error {
+	oldDataUnwrapped := oldData.(*defaultData)
 
-	tgContainer, newPayload, err := c.generateTelegramContainer(ctx, node, oldPayload)
+	tgContainer, newData, err := c.generateTelegramContainer(ctx, 0, oldDataUnwrapped.NodeName, oldDataUnwrapped)
 	if err != nil {
 		return fmt.Errorf("generate telegram container: %v", err)
 	}
 
-	storagePayload, err := wrapPayload(node.name, newPayload)
-	if err != nil {
-		return fmt.Errorf("json marshal: %v", err)
-	}
-
-	msgID, err := c.sender.SendMsg(ctx, tgContainer, 0)
+	msgID, err := c.sender.SendMsg(ctx, tgContainer)
 	if err != nil {
 		return fmt.Errorf("sending msg: %w", err)
 	}
+	newData.MessageID = msgID
 
-	if err = c.storage.SaveState(fmt.Sprintf(callbackProcessorStorageKey, msgID), storagePayload); err != nil {
+	newDataByte, err := json.Marshal(newData)
+	if err != nil {
+		return fmt.Errorf("marshal data: %w", err)
+	}
+
+	if err = c.storage.SaveState(ctx, fmt.Sprintf(callbackProcessorStorageKey, msgID), newDataByte); err != nil {
 		return fmt.Errorf("saving to storage: %w", err)
 	}
 	return nil
 }
 
-func (c *callbackManager) ProcessCallback(ctx context.Context, msgID int64, callback string) error {
-	data, err := c.storage.GetState(fmt.Sprintf(callbackProcessorStorageKey, msgID))
-	if err != nil {
-		return fmt.Errorf("getting state from db: %w", err)
+func (c *callbackManager) ProcessCallback(ctx context.Context, msgID, chatID int64, callback string) error {
+	if callback == CallbackProcessorTypeIgnore.String() {
+		return nil
 	}
 
-	payload, _, err := unwrapPayload(data)
+	dataByte, err := c.storage.GetState(ctx, fmt.Sprintf(callbackProcessorStorageKey, msgID))
 	if err != nil {
-		return fmt.Errorf("unwrap payload: %w", err)
+		return nil
+	}
+	if dataByte == nil {
+		if c.callbackDataNotFoundProcessor != nil {
+			return c.callbackDataNotFoundProcessor(ctx, msgID, chatID, callback)
+		}
+		return ErrCallbackDataNotFound
 	}
 
-	//node, ok := c.callbackNodesMap[nodeName]
-	//if !ok {
-	//	return fmt.Errorf("node not found")
-	//}
+	var data defaultData
 
-	if callback == callbackCommandProcess {
-		return c.processCallbackCommandProcess(ctx, callback, payload)
+	if err = json.Unmarshal(dataByte, &data); err != nil {
+		return fmt.Errorf("unmarshal storage data: %w", err)
+	}
+
+	return c.processCallbackCommandProcess(ctx, msgID, callback, &data)
+}
+
+func (c *callbackManager) ProcessMsg(ctx context.Context, msgID, chatID int64, message string) error {
+	message = strings.ReplaceAll(message, fmt.Sprintf("@%s", c.botName), "")
+
+	msg, key, userPayload, err := parseSwitchInlineInput(message)
+	if err != nil {
+		return ErrMessageProcessorNotFound
+	}
+
+	processor, ok := c.inlineMessagesProcessorsMap[msg]
+	if !ok || processor == nil {
+		return ErrMessageProcessorNotFound
+	}
+
+	nodeName, payload, err := processor(ctx, key, userPayload)
+	if err != nil {
+		return fmt.Errorf("processing msg: %w", err)
+	}
+
+	if nodeName == "" {
+		return nil
+	}
+
+	oldData := NewDefaultData(nodeName, chatID, msgID, payload)
+	if err = c.SendNode(ctx, oldData); err != nil {
+		return fmt.Errorf("sending node: %w", err)
 	}
 	return nil
 }
 
-func (c *callbackManager) processCallbackCommandProcess(ctx context.Context, callBack string, oldPayload []byte) error {
-	node, ok := c.callbackNodesMap[callBack]
-	if !ok {
-		return fmt.Errorf("node not found")
+func (c *callbackManager) addNodeToMap(name string, processorType CallbackProcessorType, node *callbackNode) {
+	key := callbackNodeKey{
+		name:          name,
+		processorType: processorType,
 	}
+	if _, ok := c.callbackNodesMap[key]; !ok {
+		c.callbackNodesMap[key] = node
+	}
+}
 
-	tgContainer, newPayload, err := c.generateTelegramContainer(ctx, node, oldPayload)
+func (c *callbackManager) processCallbackCommandProcess(ctx context.Context, msgID int64, callBack string, oldData *defaultData) error {
+	tgContainer, newData, err := c.generateTelegramContainer(ctx, msgID, callBack, oldData)
 	if err != nil {
 		return fmt.Errorf("generate tg container: %w", err)
 	}
 
-	msgID, err := c.sender.SendMsg(ctx, tgContainer, 0)
+	if len(tgContainer.Buttons) == 0 {
+		return nil
+	}
+
+	msgID, err = c.sender.SendMsg(ctx, tgContainer)
 	if err != nil {
 		return fmt.Errorf("sending msg: %w", err)
 	}
+	newData.MessageID = msgID
 
-	if err = c.storage.SaveState(fmt.Sprintf(callbackProcessorStorageKey, msgID), newPayload); err != nil {
+	newDataByte, err := json.Marshal(newData)
+	if err != nil {
+		return fmt.Errorf("marhsal data: %w", err)
+	}
+	if err = c.storage.SaveState(ctx, fmt.Sprintf(callbackProcessorStorageKey, msgID), newDataByte); err != nil {
 		return fmt.Errorf("saving state: %w", err)
 	}
 	return nil
@@ -213,6 +291,20 @@ func (c *callbackManager) newCallbackNode(opts CallbackOpts) (*callbackNode, err
 	if opts.Name == "" {
 		return nil, errors.New("callback node name should be specified")
 	}
+	if opts.SwitchInlineQueryCurrent == nil {
+		opts.SwitchInlineQueryCurrent = NewSwitchInlineQueryCurrentChat("", "", nil)
+	}
+
+	if !opts.ProcessorType.IsValid() {
+		opts.ProcessorType = CallbackProcessorTypeProcess
+	}
+
+	if val, ok := c.callbackNodesMap[callbackNodeKey{
+		name:          opts.Name,
+		processorType: opts.ProcessorType,
+	}]; ok {
+		return val, nil
+	}
 
 	if opts.Message == "" {
 		if c.defaultMsg == "" {
@@ -221,136 +313,125 @@ func (c *callbackManager) newCallbackNode(opts CallbackOpts) (*callbackNode, err
 		opts.Message = c.defaultMsg
 	}
 
-	if opts.CloseProcessor == nil {
-		opts.CloseProcessor = c.defaultCloseProcessor
-	}
-	if opts.BackProcessor == nil {
-		opts.BackProcessor = c.defaultBackProcessor
-	}
-	if opts.SkipProcessor == nil {
-		opts.SkipProcessor = c.defaultSkipProcessor
-	}
 	if opts.Processor == nil {
 		opts.Processor = c.defaultProcessor
 	}
 	if opts.AppearType == nil {
 		opts.AppearType = &c.defaultAppearType
 	}
+
 	return &callbackNode{
-		name:           opts.Name,
-		message:        opts.Message,
-		buttonLabel:    opts.ButtonLabel,
-		closeProcessor: opts.CloseProcessor,
-		backProcessor:  opts.BackProcessor,
-		skipProcessor:  opts.SkipProcessor,
-		processor:      opts.Processor,
-		appearType:     *opts.AppearType,
+		name:                     opts.Name,
+		message:                  opts.Message,
+		buttonLabel:              opts.ButtonLabel,
+		processor:                opts.Processor,
+		appearType:               *opts.AppearType,
+		processorType:            opts.ProcessorType,
+		finalProcessor:           opts.IsFinalProcessor,
+		switchInlineQueryCurrent: opts.SwitchInlineQueryCurrent,
 	}, nil
 }
 
-func (c *callbackManager) processCallbackNode(ctx context.Context, fromNode, transitionName string, node *callbackNode) error {
+func (c *callbackManager) processCallbackNode(ctx context.Context, fromNode string, transitionName CallbackProcessorType, node *callbackNode) error {
 	if node == nil {
 		return nil
 	}
 
-	c.callbackNodesMap[node.name] = node
+	c.transitionsMap[transitionMapItem{
+		src:        fromNode,
+		transition: transitionName,
+		dest:       node.name,
+	}] = nil
 
-	c.tempTransitionsArr = append(c.tempTransitionsArr, transition{
-		fromNode:       fromNode,
-		transitionName: transitionName,
-		toNode:         node.name,
-	})
+	if _, ok := c.callbackNodesMap[callbackNodeKey{
+		name:          node.name,
+		processorType: node.processorType,
+	}]; ok {
+		return nil
+	}
+
+	c.addNodeToMap(node.name, node.processorType, node)
+
+	if node.switchInlineQueryCurrent.Enabled() && node.switchInlineQueryCurrent.getProcessor() != nil {
+		c.inlineMessagesProcessorsMap[node.switchInlineQueryCurrent.getMsg()] = node.switchInlineQueryCurrent.getProcessor()
+		return nil
+	}
 
 	if node.processor == nil {
 		return nil
 	}
+	if node.finalProcessor {
+		return nil
+	}
 
-	nextNodes, _, err := node.processor(ctx, nil)
+	nextNodes, _, err := node.processor(ctx, &defaultData{
+		NodeName: node.name,
+	})
 	if err != nil {
 		return err
 	}
 
 	for i := range nextNodes {
-		if err = c.processCallbackNode(ctx, node.name, transitionProcess, nextNodes[i].(*callbackNode)); err != nil {
+		nextNode := nextNodes[i].(*callbackNode)
+		if err = c.processCallbackNode(ctx, node.name, nextNode.processorType, nextNode); err != nil {
 			return err
-		}
-	}
-
-	if node.closeProcessor != nil {
-		closeNode, err := node.closeProcessor(ctx)
-		if err != nil {
-			return err
-		}
-		if closeNode == nil {
-			c.tempTransitionsArr = append(c.tempTransitionsArr, transition{
-				fromNode:       node.name,
-				transitionName: transitionClose,
-				toNode:         fmt.Sprintf(stateClose, node.name),
-			})
-		} else {
-			if err = c.processCallbackNode(ctx, node.name, transitionClose, closeNode.(*callbackNode)); err != nil {
-				return err
-			}
-		}
-	}
-
-	if node.backProcessor != nil {
-		backNode, err := node.backProcessor(ctx)
-		if err != nil {
-			return err
-		}
-		if backNode == nil {
-			c.tempTransitionsArr = append(c.tempTransitionsArr, transition{
-				fromNode:       node.name,
-				transitionName: transitionBack,
-				toNode:         fmt.Sprintf(stateBack, node.name),
-			})
-		} else {
-			if err = c.processCallbackNode(ctx, node.name, transitionBack, backNode.(*callbackNode)); err != nil {
-				return err
-			}
-		}
-	}
-
-	if node.skipProcessor != nil {
-		skipNode, err := node.skipProcessor(ctx)
-		if err != nil {
-			return err
-		}
-		if skipNode == nil {
-			c.tempTransitionsArr = append(c.tempTransitionsArr, transition{
-				fromNode:       node.name,
-				transitionName: transitionSkip,
-				toNode:         fmt.Sprintf(stateSkip, node.name),
-			})
-		} else {
-			if err = c.processCallbackNode(ctx, node.name, transitionSkip, skipNode.(*callbackNode)); err != nil {
-				return err
-			}
 		}
 	}
 	return nil
 }
 
-func (c *callbackManager) safeRunProcessor(ctx context.Context, processor CallbackNodeProcessorFunc, payload []byte) (nodes []CallbackNode, outPayload []byte, err error) {
-	nodes, outPayload, err = processor(ctx, payload)
+func (c *callbackManager) safeRunProcessor(ctx context.Context, processor CallbackNodeProcessorFunc, oldData DefaultDataType) (
+	nodes []CallbackNode, newPayload []byte, err error) {
+	nodes, newPayload, err = processor(ctx, oldData)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	for i := range nodes {
-		if _, ok := c.callbackNodesMap[nodes[i].Name()]; !ok {
-			c.callbackNodesMap[nodes[i].Name()] = nodes[i].(*callbackNode)
-		}
+		c.addNodeToMap(nodes[i].getName(), nodes[i].getProcessorType(), nodes[i].(*callbackNode))
 	}
-	return nodes, outPayload, nil
+	return nodes, newPayload, nil
 }
 
-func (c *callbackManager) generateTelegramContainer(ctx context.Context, node *callbackNode, oldPayload []byte) (tgContainer TelegramContainer, newPayload []byte, err error) {
-	_, newPayload, err = c.safeRunProcessor(ctx, node.processor, oldPayload)
+func (c *callbackManager) generateTelegramContainer(ctx context.Context, msgID int64, nodeName string, oldData *defaultData) (
+	tgContainer TelegramContainer, newData *defaultData, err error) {
+
+	node := c.findAnyNodeByName(nodeName)
+	if node == nil {
+		return TelegramContainer{}, nil, errors.New("node with this name not found")
+	}
+
+	if node.processor == nil {
+		return TelegramContainer{}, nil, nil
+	}
+
+	nodes, newPayload, err := c.safeRunProcessor(ctx, node.processor, DefaultDataType(oldData))
 	if err != nil {
 		return TelegramContainer{}, nil, err
 	}
 
-	return TelegramContainer{}, newPayload, nil
+	if len(nodes) == 0 {
+		go func() {
+			_ = c.storage.DeleteState(ctx, fmt.Sprintf(callbackProcessorStorageKey, msgID))
+		}()
+	}
+
+	tgContainer.Buttons = make([]Button, 0, len(nodes))
+	tgContainer.ChatID = oldData.ChatID
+	tgContainer.OldMessageID = msgID
+	tgContainer.AppearType = node.appearType
+	tgContainer.Message = node.message
+
+	for i := range nodes {
+		tgContainer.Buttons = append(tgContainer.Buttons, Button{
+			ButtonLabel:                  nodes[i].getButtonLabel(),
+			Callback:                     nodes[i].getName(),
+			ProcessorType:                nodes[i].getProcessorType(),
+			SwitchInlineQueryCurrentChat: nodes[i].getSwitchInlineQueryCurrentChat(),
+		})
+	}
+
+	oldData.NodeName = nodeName
+	oldData.Payload = newPayload
+	return tgContainer, oldData, nil
 }

@@ -22,4 +22,17 @@ type Button struct {
 	Callback                     string
 	ProcessorType                CallbackProcessorType
 	SwitchInlineQueryCurrentChat SwitchInlineQueryCurrentChat
+	Link                         Link
+}
+
+type link struct {
+	link string
+}
+
+func (l *link) GetLink() string {
+	return l.link
+}
+
+type Link interface {
+	GetLink() string
 }

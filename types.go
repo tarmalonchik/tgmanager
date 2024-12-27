@@ -6,7 +6,6 @@ import (
 )
 
 var (
-	ErrCallbackDataNotFound     = errors.New("callback processor not found")
 	ErrMessageProcessorNotFound = errors.New("message processor not found")
 )
 
@@ -14,4 +13,4 @@ var (
 type CallBackAppearType string
 
 // CallbackProcessorType ENUM(process,back,close,skip,ignore)
-type CallbackProcessorType string
+type CallbackProcessorType int

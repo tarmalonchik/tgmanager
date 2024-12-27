@@ -54,38 +54,56 @@ func ParseCallBackAppearType(name string) (CallBackAppearType, error) {
 }
 
 const (
-	// CallbackProcessorTypeProcess is a CallbackProcessorType of type process.
-	CallbackProcessorTypeProcess CallbackProcessorType = "process"
-	// CallbackProcessorTypeBack is a CallbackProcessorType of type back.
-	CallbackProcessorTypeBack CallbackProcessorType = "back"
-	// CallbackProcessorTypeClose is a CallbackProcessorType of type close.
-	CallbackProcessorTypeClose CallbackProcessorType = "close"
-	// CallbackProcessorTypeSkip is a CallbackProcessorType of type skip.
-	CallbackProcessorTypeSkip CallbackProcessorType = "skip"
-	// CallbackProcessorTypeIgnore is a CallbackProcessorType of type ignore.
-	CallbackProcessorTypeIgnore CallbackProcessorType = "ignore"
+	// CallbackProcessorTypeProcess is a CallbackProcessorType of type Process.
+	CallbackProcessorTypeProcess CallbackProcessorType = iota
+	// CallbackProcessorTypeBack is a CallbackProcessorType of type Back.
+	CallbackProcessorTypeBack
+	// CallbackProcessorTypeClose is a CallbackProcessorType of type Close.
+	CallbackProcessorTypeClose
+	// CallbackProcessorTypeSkip is a CallbackProcessorType of type Skip.
+	CallbackProcessorTypeSkip
+	// CallbackProcessorTypeIgnore is a CallbackProcessorType of type Ignore.
+	CallbackProcessorTypeIgnore
 )
 
 var ErrInvalidCallbackProcessorType = errors.New("not a valid CallbackProcessorType")
 
+const _CallbackProcessorTypeName = "processbackcloseskipignore"
+
+var _CallbackProcessorTypeMap = map[CallbackProcessorType]string{
+	CallbackProcessorTypeProcess: _CallbackProcessorTypeName[0:7],
+	CallbackProcessorTypeBack:    _CallbackProcessorTypeName[7:11],
+	CallbackProcessorTypeClose:   _CallbackProcessorTypeName[11:16],
+	CallbackProcessorTypeSkip:    _CallbackProcessorTypeName[16:20],
+	CallbackProcessorTypeIgnore:  _CallbackProcessorTypeName[20:26],
+}
+
 // String implements the Stringer interface.
 func (x CallbackProcessorType) String() string {
-	return string(x)
+	if str, ok := _CallbackProcessorTypeMap[x]; ok {
+		return str
+	}
+	return fmt.Sprintf("CallbackProcessorType(%d)", x)
 }
 
 // IsValid provides a quick way to determine if the typed value is
 // part of the allowed enumerated values
 func (x CallbackProcessorType) IsValid() bool {
-	_, err := ParseCallbackProcessorType(string(x))
-	return err == nil
+	_, ok := _CallbackProcessorTypeMap[x]
+	return ok
 }
 
 var _CallbackProcessorTypeValue = map[string]CallbackProcessorType{
-	"process": CallbackProcessorTypeProcess,
-	"back":    CallbackProcessorTypeBack,
-	"close":   CallbackProcessorTypeClose,
-	"skip":    CallbackProcessorTypeSkip,
-	"ignore":  CallbackProcessorTypeIgnore,
+	_CallbackProcessorTypeName[0:7]:                    CallbackProcessorTypeProcess,
+	strings.ToLower(_CallbackProcessorTypeName[0:7]):   CallbackProcessorTypeProcess,
+	_CallbackProcessorTypeName[7:11]:                   CallbackProcessorTypeBack,
+	strings.ToLower(_CallbackProcessorTypeName[7:11]):  CallbackProcessorTypeBack,
+	_CallbackProcessorTypeName[11:16]:                  CallbackProcessorTypeClose,
+	strings.ToLower(_CallbackProcessorTypeName[11:16]): CallbackProcessorTypeClose,
+	_CallbackProcessorTypeName[16:20]:                  CallbackProcessorTypeSkip,
+	strings.ToLower(_CallbackProcessorTypeName[16:20]): CallbackProcessorTypeSkip,
+	_CallbackProcessorTypeName[20:26]:                  CallbackProcessorTypeIgnore,
+	strings.ToLower(_CallbackProcessorTypeName[20:26]): CallbackProcessorTypeIgnore,
 }
 
 // ParseCallbackProcessorType attempts to convert a string to a CallbackProcessorType.
@@ -97,5 +115,5 @@ func ParseCallbackProcessorType(name string) (CallbackProcessorType, error) {
 	if x, ok := _CallbackProcessorTypeValue[strings.ToLower(name)]; ok {
 		return x, nil
 	}
-	return CallbackProcessorType(""), fmt.Errorf("%s is %w", name, ErrInvalidCallbackProcessorType)
+	return CallbackProcessorType(0), fmt.Errorf("%s is %w", name, ErrInvalidCallbackProcessorType)
 }

@@ -7,56 +7,28 @@ import (
 	"strings"
 )
 
-type SwitchInlineProcessorFunc func(ctx context.Context, key, userPayload string) (nodeName string, payload []byte, err error)
+type SwitchInlineProcessorFunc func(ctx context.Context, key, userPayload string, chatID, msgID int64) (data InOutData, processorName string, err error)
 
+type SwitchInlineQueryCurrentChat interface {
+	GetText() string
+	getMsg() string
+}
 type switchInlineQueryCurrentChat struct {
-	Enable    bool
-	msg       string
-	Key       string
-	processor SwitchInlineProcessorFunc
+	msg string
+	key string
 }
 
 const inlineDivider = "\n→"
 
-func (s *switchInlineQueryCurrentChat) Enabled() bool {
-	return s.Enable
-}
-func (s *switchInlineQueryCurrentChat) getMsg() string {
-	return s.msg
-}
-func (s *switchInlineQueryCurrentChat) getProcessor() SwitchInlineProcessorFunc {
-	return s.processor
-}
-
 func (s *switchInlineQueryCurrentChat) GetText() string {
-	if !s.Enable {
-		return ""
-	}
-	if s.Key != "" {
-		return fmt.Sprintf("%s (%s) %s ", s.msg, s.Key, inlineDivider)
+	if s.key != "" {
+		return fmt.Sprintf("%s (%s) %s ", s.msg, s.key, inlineDivider)
 	}
 	return fmt.Sprintf("%s%s ", s.msg, inlineDivider)
 }
 
-type SwitchInlineQueryCurrentChat interface {
-	GetText() string
-	Enabled() bool
-	getProcessor() SwitchInlineProcessorFunc
-	getMsg() string
-}
-
-// NewSwitchInlineQueryCurrentChat
-// message and processor are required fields
-func NewSwitchInlineQueryCurrentChat(message, key string, processor SwitchInlineProcessorFunc) SwitchInlineQueryCurrentChat {
-	if message == "" || processor == nil {
-		return &switchInlineQueryCurrentChat{}
-	}
-	return &switchInlineQueryCurrentChat{
-		Enable:    true,
-		msg:       message,
-		Key:       key,
-		processor: processor,
-	}
+func (s *switchInlineQueryCurrentChat) getMsg() string {
+	return s.msg
 }
 
 func parseSwitchInlineInput(in string) (msg, key, payload string, err error) {
